@@ -1,0 +1,20 @@
+resources:
+  pipelines:
+    silver_gold:
+      name: ${var.catalog}
+      serverless: true
+      catalog: ${var.catalog}
+      # Exigido pela API para pipelines UC, mesmo com todo SQL totalmente
+      # qualificado via ${silver_schema}/${gold_schema} — nunca usado como
+      # destino implícito, só satisfaz a validação de schema padrão.
+      schema: ${resources.schemas.silver.name}
+      configuration:
+        medallion_catalog: ${var.catalog}
+        bronze_schema: ${resources.schemas.bronze.name}
+        silver_schema: ${resources.schemas.silver.name}
+        gold_schema: ${resources.schemas.gold.name}
+      libraries:
+        - glob:
+            include: ../src/pipelines/trade_analytics/transformations/silver/**
+        - glob:
+            include: ../src/pipelines/trade_analytics/transformations/gold/**

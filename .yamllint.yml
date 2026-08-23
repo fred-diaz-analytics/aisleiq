@@ -1,0 +1,22 @@
+extends: default
+
+rules:
+  line-length:
+    max: 140
+    level: warning
+  document-start: disable
+  # ${var.x} / ${resources.schemas.bronze.name} do bundle não são comentários
+  comments:
+    min-spaces-from-content: 1
+  truthy:
+    # YAML do bundle usa "on"/"off" em alguns contextos do Databricks
+    check-keys: false
+
+ignore: |
+  .databricks/
+  .ai-dev-kit/
+  .venv/
+  .claude/
+  .pytest_cache/
+  .ruff_cache/
+  site/

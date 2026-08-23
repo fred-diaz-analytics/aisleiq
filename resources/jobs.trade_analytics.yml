@@ -1,0 +1,84 @@
+resources:
+  jobs:
+    trade_analytics:
+      name: ${var.catalog}
+      schedule:
+        # Quartz cron: roda todo dia às 7h e às 13h (mesma expressão cobre os dois horários).
+        quartz_cron_expression: "0 0 7,13 * * ?"
+        timezone_id: America/Sao_Paulo
+        # Pausado por padrão (dev): evita disparo automático diário consumindo
+        # cluster/custo à toa. Reativado só no target prod (ver databricks.yml).
+        pause_status: PAUSED
+      tasks:
+        - task_key: bronze_execucao_pdv
+          notebook_task:
+            notebook_path: ../src/pipelines/trade_analytics/transformations/bronze/bronze_ingest.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${resources.schemas.bronze.name}
+              volume_name: ${resources.volumes.raw_files.name}
+              s3_endpoint: ${var.s3_endpoint}
+              prefix: trade_analytics/execucao_pdv/
+              file_regex: (\d{8}).*execucao_pdv.*\.parquet$
+              table_name: execucao_pdv
+          max_retries: 3
+
+        - task_key: bronze_atendimentos
+          notebook_task:
+            notebook_path: ../src/pipelines/trade_analytics/transformations/bronze/bronze_ingest.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${resources.schemas.bronze.name}
+              volume_name: ${resources.volumes.raw_files.name}
+              s3_endpoint: ${var.s3_endpoint}
+              prefix: trade_analytics/atendimento/
+              file_regex: (\d{8}).*atendimento.*\.parquet$
+              table_name: atendimentos
+          max_retries: 3
+
+        - task_key: silver_gold_pipeline
+          depends_on:
+            - task_key: bronze_execucao_pdv
+            - task_key: bronze_atendimentos
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.silver_gold.id}
+          max_retries: 3
+
+    # Dado mestre (lojas/rede/região), não fato diário — full-reload sob
+    # demanda, por isso é um job separado sem `schedule`, fora do ciclo
+    # automático do job `trade_analytics` acima. Rodar manualmente (ex:
+    # `databricks bundle run trade_analytics_lojas -t dev`) sempre que o
+    # dado mestre mudar (nova loja, rede renomeada). Ver
+    # docs/superpowers/specs/2026-08-21-dim-loja-dados-mestre-design.md.
+    trade_analytics_lojas:
+      name: ${var.catalog}_lojas
+      tasks:
+        - task_key: bronze_lojas
+          notebook_task:
+            notebook_path: ../src/pipelines/trade_analytics/transformations/bronze/bronze_ingest_lojas.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${resources.schemas.bronze.name}
+              volume_name: ${resources.volumes.raw_files.name}
+              s3_endpoint: ${var.s3_endpoint}
+              prefix: trade_analytics/lojas/
+          max_retries: 3
+
+    # Dado mestre (produto/marca/categoria), mesmo padrão de trade_analytics_lojas
+    # acima: full-reload sob demanda, job separado sem `schedule`. Rodar
+    # manualmente (`databricks bundle run trade_analytics_produtos -t dev`)
+    # sempre que o catálogo de produtos mudar. Ver
+    # docs/superpowers/specs/2026-08-21-dim-produto-dados-mestre-design.md.
+    trade_analytics_produtos:
+      name: ${var.catalog}_produtos
+      tasks:
+        - task_key: bronze_produtos
+          notebook_task:
+            notebook_path: ../src/pipelines/trade_analytics/transformations/bronze/bronze_ingest_produtos.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${resources.schemas.bronze.name}
+              volume_name: ${resources.volumes.raw_files.name}
+              s3_endpoint: ${var.s3_endpoint}
+              prefix: trade_analytics/produtos/
+          max_retries: 3

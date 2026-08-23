@@ -1,0 +1,50 @@
+site_name: AisleIQ
+site_description: Pipeline de dados em arquitetura medalhão no Databricks para KPIs de execução de PDV e atendimento.
+repo_name: AisleIQ
+docs_dir: docs
+
+theme:
+  name: material
+  language: pt-BR
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: amber
+      toggle:
+        icon: material/brightness-7
+        name: Modo claro
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: amber
+      toggle:
+        icon: material/brightness-4
+        name: Modo escuro
+  features:
+    - navigation.instant
+    - navigation.tabs
+    - navigation.top
+    - navigation.sections
+    - content.code.copy
+    - search.suggest
+    - search.highlight
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - tables
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.details
+
+nav:
+  - Visão Geral: index.md
+  - Arquitetura: arquitetura.md
+  - Execução de PDV: execucao-pdv.md
+  - Atendimento: atendimento.md
+  - Pipeline Diário: pipeline-diario.md
+  - Dicionário de Dados: dicionario.md

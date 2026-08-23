@@ -1,0 +1,24 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src/pipelines/trade_analytics/transformations/bronze"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+# Notebooks Databricks (formato "notebook source"): `dbutils`/`spark` são
+# globais injetados pelo runtime (F821 é falso positivo) e o padrão de
+# células `# COMMAND ----------` sempre intercala import com código antes
+# dele (E402 é estrutural do formato, não código desorganizado).
+"src/pipelines/trade_analytics/transformations/bronze/bronze_ingest.py" = ["F821", "E402"]
+"src/pipelines/trade_analytics/transformations/bronze/bronze_ingest_lojas.py" = ["F821", "E402"]
+"src/pipelines/trade_analytics/transformations/bronze/bronze_ingest_produtos.py" = ["F821", "E402"]
+# Gerador de dados sintéticos: código denso (dict literals, chamadas com
+# muitos argumentos), já validado como determinístico byte a byte. Reformatar
+# só por causa do comprimento da linha arrisca uma regressão sutil sem
+# ganho real de legibilidade — fora do escopo deste refactor de CI/lint.
+"data/*.py" = ["E501"]

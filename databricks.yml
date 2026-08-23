@@ -1,0 +1,48 @@
+bundle:
+  name: trade_analytics
+
+include:
+  - resources/*.yml
+
+variables:
+  catalog:
+    description: >-
+      Unity Catalog catalog que contém os schemas bronze/silver/gold.
+      Precisa já existir — este bundle cria os SCHEMAS, mas não o CATÁLOGO.
+  s3_endpoint:
+    description: >-
+      Endpoint S3-compatible do seu storage (ex: Supabase Storage:
+      https://<projeto>.storage.supabase.co/storage/v1/s3). Sem default de
+      propósito — nunca commitado. Defina via
+      `databricks bundle deploy --var="s3_endpoint=..."` ou pela variável de
+      ambiente `BUNDLE_VAR_s3_endpoint`.
+
+targets:
+  dev:
+    # mode: development NÃO é usado de propósito: ele prefixaria os nomes de
+    # recursos (inclusive os schemas UC bronze/silver/gold) com "dev_<user>_",
+    # o que quebraria a exigência de nomes exatos deste projeto.
+    default: true
+    workspace:
+      host: https://<SEU_WORKSPACE>.cloud.databricks.com   # ⚠️ TROQUE pelo host do seu workspace (ver README)
+    variables:
+      catalog: aisleiq_dev
+
+  prod:
+    # run_as:
+    #   service_principal_name: <application-id-do-service-principal-de-ci-cd>
+    #   ⚠️ Preencha com o service principal real antes de rodar deploy de prod
+    #   pela esteira de CI/CD. Sem isso, o deploy roda como o usuário que
+    #   executar o comando.
+    mode: production
+    workspace:
+      host: https://<SEU_WORKSPACE>.cloud.databricks.com   # ⚠️ TROQUE — pode ser um workspace diferente do de dev
+      root_path: /Workspace/${bundle.name}
+    variables:
+      # ⚠️ TROQUE se o catálogo de produção tiver outro nome (precisa já existir).
+      catalog: aisleiq_prod
+    resources:
+      jobs:
+        trade_analytics:
+          schedule:
+            pause_status: UNPAUSED

@@ -1,0 +1,7 @@
+# Força LF pra texto, independente do autocrlf local (Windows) — evita que
+# yamllint/ferramentas de CI reclamem de CRLF sem motivo, e mantém diffs
+# limpos entre SO diferentes.
+* text=auto eol=lf
+
+*.parquet binary
+*.csv text eol=lf

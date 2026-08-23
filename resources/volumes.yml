@@ -1,0 +1,8 @@
+resources:
+  volumes:
+    raw_files:
+      catalog_name: ${var.catalog}
+      schema_name: ${resources.schemas.bronze.name}
+      name: raw_files
+      volume_type: MANAGED
+      comment: Staging para download dos parquet do Supabase antes da leitura via Spark.

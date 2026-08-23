@@ -1,0 +1,51 @@
+# Tooling local (Databricks CLI, Claude Code, outros agentes de IA) — não
+# faz parte do projeto
+.databricks/
+.ai-dev-kit/
+.claude/
+.agents/
+skills-lock.json
+
+# Credenciais locais — nunca commitar
+.env
+*.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Notebooks de referência de um sistema real de trabalho anterior — não
+# fazem parte deste projeto público (ver README para contexto)
+scripts_exemplo/
+
+# Estado interno do gerador (dimensão de lojas + checkpoints dia-a-dia) —
+# não é consumido pela pipeline, só pelo próprio gerador pra continuar
+# gerando dias novos via job_diario.py. Reproduzível via backfill_2026.py
+# (geração é determinística, ver README).
+data/dclientes.csv
+data/estado_execucao.csv
+data/estado_atendimento.csv
+data/resumo_backfill*.csv
+
+# FREEZE dos parquet gerados — commitados até 2026-08-21 (snapshot fixo,
+# pequeno, determinístico, sem PII). job_diario.py continua rodando todo
+# dia (catch-up + upload pro Supabase), mas os arquivos gerados DEPOIS
+# dessa data não devem ser commitados — senão o repo cresce pra sempre.
+# Como estes arquivos já estão rastreados, essa regra não os afeta; ela só
+# impede que os PRÓXIMOS (datas futuras, ainda não rastreadas) apareçam
+# como candidatos em `git add .`/`git status`. Ver README.
+data/execucao_pdv/*.parquet
+data/atendimento/*.parquet
+
+# DuckDB local de validação (data/build_duckdb.py) — artefato de teste,
+# regenerável a qualquer momento, não faz parte da pipeline real.
+*.duckdb
+
+# Build estático do site de docs (mkdocs build) — regenerável, não faz
+# parte do código-fonte.
+/site/
+
+# Specs de discussão/design (skill brainstorming/grilling) — registro interno
+# do processo de decisão, não é documentação do projeto em si.
+docs/superpowers/

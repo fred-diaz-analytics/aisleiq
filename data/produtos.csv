@@ -1,0 +1,28 @@
+id_produto,produto,tamanho,id_marca,marca,id_categoria
+1,Suave P,P,1,Suave,1
+2,Suave M,M,1,Suave,1
+3,Suave G,G,1,Suave,1
+4,PureCare P,P,2,PureCare,1
+5,PureCare M,M,2,PureCare,1
+6,PureCare G,G,2,PureCare,1
+7,Bellara P,P,3,Bellara,1
+8,Bellara M,M,3,Bellara,1
+9,Bellara G,G,3,Bellara,1
+10,Brilhare P,P,4,Brilhare,2
+11,Brilhare M,M,4,Brilhare,2
+12,Brilhare G,G,4,Brilhare,2
+13,CleanMax P,P,5,CleanMax,2
+14,CleanMax M,M,5,CleanMax,2
+15,CleanMax G,G,5,CleanMax,2
+16,Sabor Caseiro P,P,6,Sabor Caseiro,3
+17,Sabor Caseiro M,M,6,Sabor Caseiro,3
+18,Sabor Caseiro G,G,6,Sabor Caseiro,3
+19,Grãos & Cia P,P,7,Grãos & Cia,3
+20,Grãos & Cia M,M,7,Grãos & Cia,3
+21,Grãos & Cia G,G,7,Grãos & Cia,3
+22,CrocanteX P,P,8,CrocanteX,4
+23,CrocanteX M,M,8,CrocanteX,4
+24,CrocanteX G,G,8,CrocanteX,4
+25,Delicce P,P,9,Delicce,4
+26,Delicce M,M,9,Delicce,4
+27,Delicce G,G,9,Delicce,4

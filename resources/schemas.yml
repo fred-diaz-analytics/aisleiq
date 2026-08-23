@@ -1,0 +1,14 @@
+resources:
+  schemas:
+    bronze:
+      catalog_name: ${var.catalog}
+      name: bronze
+      comment: Camada bronze — ingestão bruta de execucao_pdv e atendimentos.
+    silver:
+      catalog_name: ${var.catalog}
+      name: silver
+      comment: Camada silver — dados tipados, deduplicados e validados.
+    gold:
+      catalog_name: ${var.catalog}
+      name: gold
+      comment: Camada gold — KPIs modelados para o dashboard AI/BI.

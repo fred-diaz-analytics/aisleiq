@@ -1,0 +1,57 @@
+name: Pull Request
+
+on:
+  pull_request:
+    branches: [main]
+
+# Trigger padrão (pull_request, não pull_request_target): PRs de fork NÃO
+# recebem acesso aos secrets abaixo — proteção automática do próprio GitHub.
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - run: ruff check .
+      - run: yamllint -c .yamllint.yml databricks.yml resources/ .github/workflows/
+
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - run: pytest tests/unit -v
+
+  bundle-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: databricks/setup-cli@main
+      - name: Configurar host do workspace
+        # databricks.yml commita um host placeholder (<SEU_WORKSPACE>) de
+        # propósito — nunca o host real (ver README). A CLI dá prioridade ao
+        # host escrito no arquivo sobre a env var DATABRICKS_HOST quando os
+        # dois existem e divergem ("host in profile doesn't match host in
+        # bundle"), então substitui aqui, só na cópia efêmera do runner —
+        # nunca commitado, mesmo padrão usado localmente durante o dev.
+        run: sed -i "s|https://<SEU_WORKSPACE>.cloud.databricks.com|${{ secrets.DATABRICKS_HOST }}|g" databricks.yml
+      - name: databricks bundle validate
+        env:
+          DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+          # Placeholder — bundle validate nunca executa nada, só valida a
+          # estrutura. Não precisa ser um endpoint real, só precisa existir
+          # (a variável não tem default de propósito, ver databricks.yml).
+          BUNDLE_VAR_s3_endpoint: https://ci-placeholder.storage.supabase.co/storage/v1/s3
+        run: databricks bundle validate -t dev
