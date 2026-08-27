@@ -46,7 +46,12 @@ targets:
     mode: production
     workspace:
       host: https://<SEU_WORKSPACE>.cloud.databricks.com   # ⚠️ TROQUE — pode ser um workspace diferente do de dev
-      root_path: /Workspace/${bundle.name}
+      # Fixo (recomendação do próprio `bundle validate` pra mode: production:
+      # evita risco de deploy duplicado se mais de uma identidade deployar
+      # prod), mas dentro da pasta do SP de run_as — não na raiz do
+      # /Workspace/, que só admin escreve (era o "access denied" anterior).
+      # userName do SP no workspace == o Application ID (mesma variável).
+      root_path: /Workspace/Users/${var.prod_service_principal_id}/.bundle/${bundle.name}/${bundle.target}
     variables:
       # ⚠️ TROQUE se o catálogo de produção tiver outro nome (precisa já existir).
       catalog: aisleiq_prod
