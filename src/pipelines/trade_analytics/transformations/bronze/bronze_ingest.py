@@ -99,11 +99,33 @@ log = logging.getLogger(f"bronze_ingest.{TABLE_NAME}")
 # COMMAND ----------
 
 def ensure_infra() -> None:
-    """Garante schema e volume de staging."""
+    """Garante schema, volume de staging e row tracking/CDF na tabela Bronze.
+
+    Row tracking + CDF são exigidos pelo Lakeflow Declarative Pipelines pra
+    refresh incremental da silver (sem isso, `execucao_pdv`/`atendimentos`
+    na silver caem em full recompute a cada run). `ALTER TABLE ... SET
+    TBLPROPERTIES` é idempotente, mas não é grátis — só roda se a property
+    ainda não estiver no valor esperado, pra não pagar o custo em todo run
+    depois que já foi aplicado uma vez.
+    """
     spark.sql(f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.{SCHEMA}")
     spark.sql(
         f"CREATE VOLUME IF NOT EXISTS {CATALOG}.{SCHEMA}.{dbutils.widgets.get('volume_name')}"
     )
+    if spark.catalog.tableExists(T_BRONZE):
+        props = {
+            row["key"]: row["value"]
+            for row in spark.sql(f"SHOW TBLPROPERTIES {T_BRONZE}").collect()
+        }
+        if (
+            props.get("delta.enableRowTracking") != "true"
+            or props.get("delta.enableChangeDataFeed") != "true"
+        ):
+            spark.sql(
+                f"ALTER TABLE {T_BRONZE} SET TBLPROPERTIES ("
+                "delta.enableRowTracking = true, "
+                "delta.enableChangeDataFeed = true)"
+            )
     log.info(f"infra_ok | schema={CATALOG}.{SCHEMA} | volume={VOLUME_PATH}")
 
 
@@ -256,7 +278,11 @@ def load_file_to_bronze(local_path: str, source_file: str, source_date: date) ->
             "replaceWhere", f"source_file = '{source_file}'"
         ).saveAsTable(T_BRONZE)
     else:
-        writer.mode("append").saveAsTable(T_BRONZE)
+        # row tracking + CDF já na criação, pra tabelas novas não dependerem
+        # do ALTER TABLE em ensure_infra() rodar numa próxima execução.
+        writer.option("delta.enableRowTracking", "true").option(
+            "delta.enableChangeDataFeed", "true"
+        ).mode("append").saveAsTable(T_BRONZE)
 
     return row_count
 

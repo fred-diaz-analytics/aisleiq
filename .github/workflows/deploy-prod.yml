@@ -1,0 +1,51 @@
+name: Deploy Prod
+
+# Manual de propósito (workflow_dispatch): projeto de portfólio, sem gatilho
+# automático em push/merge — quem decide quando popular/atualizar prod aperta
+# o botão. Trocar pra "on: push: branches: [main]" depois é só adicionar o
+# gatilho, sem mexer no resto do arquivo.
+on:
+  workflow_dispatch:
+    inputs:
+      run_pipeline:
+        description: "Rodar o job trade_analytics em prod depois do deploy?"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-prod:
+    runs-on: ubuntu-latest
+    # Gate extra opcional: crie um Environment "production" em Settings ->
+    # Environments com required reviewers, pra exigir aprovação manual antes
+    # deste job rodar, além do workflow_dispatch.
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: databricks/setup-cli@main
+      - name: Configurar host do workspace
+        # databricks.yml commita um host placeholder (<SEU_WORKSPACE>) de
+        # propósito — nunca o host real (ver README). Mesmo padrão de
+        # pull-request.yml: substitui só na cópia efêmera do runner.
+        run: sed -i "s|https://<SEU_WORKSPACE>.cloud.databricks.com|${{ secrets.DATABRICKS_HOST }}|g" databricks.yml
+      - name: databricks bundle deploy -t prod
+        env:
+          DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+          # Endpoint real do Supabase Storage — diferente do placeholder usado
+          # em pull-request.yml (lá é só validate, aqui roda de verdade).
+          BUNDLE_VAR_s3_endpoint: ${{ secrets.SUPABASE_S3_ENDPOINT }}
+          # Mesmo SP usado pra autenticar (DATABRICKS_CLIENT_ID) é quem roda o
+          # job em prod (run_as) — reaproveita o valor, não precisa de outro secret.
+          BUNDLE_VAR_prod_service_principal_id: ${{ secrets.DATABRICKS_CLIENT_ID }}
+        run: databricks bundle deploy -t prod
+      - name: databricks bundle run trade_analytics -t prod
+        if: ${{ inputs.run_pipeline }}
+        env:
+          DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+          BUNDLE_VAR_s3_endpoint: ${{ secrets.SUPABASE_S3_ENDPOINT }}
+          BUNDLE_VAR_prod_service_principal_id: ${{ secrets.DATABRICKS_CLIENT_ID }}
+        run: databricks bundle run trade_analytics -t prod

@@ -16,6 +16,14 @@ variables:
       propósito — nunca commitado. Defina via
       `databricks bundle deploy --var="s3_endpoint=..."` ou pela variável de
       ambiente `BUNDLE_VAR_s3_endpoint`.
+  prod_service_principal_id:
+    description: >-
+      Application ID do service principal que roda o deploy/job em prod
+      (run_as, ver target prod abaixo). Não é secret (é o "usuário", não a
+      senha), mas mesmo assim sem default — cada ambiente/fork usa o seu
+      próprio SP, não o de quem criou este template. Defina via
+      `BUNDLE_VAR_prod_service_principal_id` (na esteira de CI/CD, mesmo
+      valor do client_id de autenticação já usado pra rodar o deploy).
 
 targets:
   dev:
@@ -29,11 +37,12 @@ targets:
       catalog: aisleiq_dev
 
   prod:
-    # run_as:
-    #   service_principal_name: <application-id-do-service-principal-de-ci-cd>
-    #   ⚠️ Preencha com o service principal real antes de rodar deploy de prod
-    #   pela esteira de CI/CD. Sem isso, o deploy roda como o usuário que
-    #   executar o comando.
+    # SP aisleiq_ci — grants já concedidos: USE_CATALOG/CREATE_SCHEMA/
+    # USE_SCHEMA/CREATE_TABLE/CREATE_MATERIALIZED_VIEW/SELECT em aisleiq_prod,
+    # READ no secret scope 'supabase' (bronze_ingest.py roda como esse SP em
+    # prod e precisa ler as credenciais do Supabase em runtime).
+    run_as:
+      service_principal_name: ${var.prod_service_principal_id}
     mode: production
     workspace:
       host: https://<SEU_WORKSPACE>.cloud.databricks.com   # ⚠️ TROQUE — pode ser um workspace diferente do de dev

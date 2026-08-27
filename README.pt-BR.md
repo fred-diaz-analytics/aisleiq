@@ -205,6 +205,72 @@ horário do Job Databricks.
 > manutenção). Rode `backfill_2026.py`/`job_diario.py` você mesmo se quiser dado sintético
 > mais recente localmente.
 
+## Pipeline em produção: o que já quebrou (e como resolvi)
+
+Documentação de arquitetura mostra a intenção. Rodar o pipeline de verdade — com dado
+sintético evoluindo dia após dia — é o que expõe o que a intenção não previu. Esta seção
+registra problemas reais encontrados operando o pipeline, não hipotéticos.
+
+### Silver `execucao_pdv` em full recompute em vez de incremental
+
+**O que aconteceu**: a aba "Data quality" do pipeline mostrava `execucao_pdv` (silver) sempre
+como `Full recompute` a cada execução — 1.4M linhas reprocessadas do zero toda vez, em vez de
+só as linhas novas do dia.
+
+**Causa**: a UI apontava `DELTA_FEATURE_NOT_ENABLED` ("please enable row tracking on the
+source tables"). Refresh incremental em Lakeflow Declarative Pipelines exige row tracking +
+Change Data Feed habilitados nas tabelas fonte (Delta features). `bronze.execucao_pdv` e
+`bronze.atendimentos` eram criadas via `saveAsTable` puro em `bronze_ingest.py`, sem essas
+properties.
+
+**Solução**: `bronze_ingest.py` agora habilita `delta.enableRowTracking` e
+`delta.enableChangeDataFeed` na criação da tabela, e reforça isso via
+`ALTER TABLE ... SET TBLPROPERTIES` idempotente em `ensure_infra()` — cobre tanto um ambiente
+novo quanto a tabela que já estava em produção sem essas properties.
+
+**O que não mudou de propósito**: mesmo com row tracking habilitado, `silver.execucao_pdv`
+continua em full recompute — a query deduplica por `ROW_NUMBER() OVER` (sync duplicado e
+"vencedor" por loja/dia) olhando o grupo inteiro. Uma linha nova pode mudar quem é o
+vencedor daquele grupo, então não é uma transformação aditiva: o cost model do Databricks
+está certo em escolher full recompute aqui, independente de row tracking estar ligado.
+
+### Full recompute em `execucao_pdv` e `execucao_pdv_preco_stats`: decisão de design, não bug
+
+**Contexto**: depois do fix de row tracking acima, toda gold KPI aditiva (presença, ruptura,
+share de gôndola, MPDV, ponto extra, preço, e as 3 de atendimento) passou a rodar
+`Incremental`. Só duas datasets na silver continuam `Full recompute`: `execucao_pdv` e
+`execucao_pdv_preco_stats` (a view de mediana/MAD/robust z-score de preço, extraída de
+`execucao_pdv.sql` — ver seção de otimizações de preço). Confirmado na aba Data Quality do
+pipeline, com todo o resto do grafo incremental ao redor.
+
+**Por que continuam full recompute**: as duas fazem cálculo não-aditivo — uma linha nova
+pode mudar o resultado de linhas *já processadas*, não só se somar a elas.
+`execucao_pdv` deduplica via `ROW_NUMBER() OVER (PARTITION BY ...)` (um sync novo pode
+reordenar o "vencedor" do grupo); `execucao_pdv_preco_stats` calcula mediana/MAD por
+`id_produto` sobre o histórico inteiro (uma resposta nova pode deslocar a mediana de
+respostas antigas do mesmo produto). Refresh incremental não é matematicamente seguro
+nesses casos — o motor precisaria reavaliar o grupo inteiro de qualquer forma, então
+"incremental" não economizaria nada.
+
+**Por que não é problema hoje**: é full recompute de uma *view materializada*
+(231K–1.4M linhas, 4-26s de duração), não de uma tabela raw sendo reconstruída do zero. No
+volume atual do projeto, o custo é irrelevante — não existe trabalho de otimização
+pendente aqui.
+
+**Quando isso deixaria de valer**: se o volume subisse pra ordem de bilhões de linhas, o
+custo passaria a doer de verdade. Nesse cenário a estratégia não seria tentar forçar o
+motor a aceitar incremental (a lógica continua não-aditiva independente do volume) — seria
+trocar de estratégia:
+- **Liquid clustering por `dt_pesquisa`/`source_date`**, pra tornar barato reescrever só
+  as partições/dias afetados via `replaceWhere` (mesmo padrão que `bronze_ingest.py` já usa
+  pra idempotência), em vez de depender do refresh incremental automático do Lakeflow.
+- **Janela móvel** (ex: mediana/MAD sobre os últimos 90 dias, não o histórico inteiro) em
+  `execucao_pdv_preco_stats`, limitando o custo da estatística independente do tamanho
+  total da tabela.
+
+Decisão: manter como está enquanto o volume for este. Revisitar só se a escala mudar de
+ordem de grandeza.
+
 ## Testes
 
 ```bash

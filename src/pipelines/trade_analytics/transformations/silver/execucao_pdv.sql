@@ -1,8 +1,10 @@
 -- Silver — execucao_pdv
 -- Tipa dt_pesquisa/dt_gravacao, limpa `resposta` (texto livre e sujo) para um
--- tipo específico por `indicador`, sinaliza respostas inválidas (sentinelas
--- como -1, percentuais fora de [0,100], preços <= 0, outlier estatístico de
--- preço por SKU via robust z-score, ver preco_stats/resposta_valida abaixo),
+-- tipo específico por `indicador`, sinaliza respostas estruturalmente
+-- inválidas (sentinelas como -1, percentuais fora de [0,100], preços <= 0).
+-- Para PRECO, resposta_valida cobre só a validade estrutural: o outlier
+-- estatístico por SKU (robust z-score) vive em execucao_pdv_preco_stats,
+-- não aqui — ver comentário da CONSTRAINT resposta_valida_esperada abaixo.
 -- remove duplicidade de sync (~3% das respostas são gravadas duas vezes pelo
 -- app, mesmo conteúdo, id_pesquisa_resposta novo, dt_gravacao mais tarde;
 -- mantém só o primeiro sync) e deduplica por (id_loja, dt_pesquisa): quando
@@ -19,10 +21,12 @@ CREATE OR REFRESH MATERIALIZED VIEW ${medallion_catalog}.${silver_schema}.execuc
   ) ON VIOLATION DROP ROW,
   -- sem ON VIOLATION DROP ROW: só monitora no painel de qualidade de dados do
   -- Lakeflow. resposta_valida já cuida de excluir da gold (ver flagged
-  -- abaixo). Cobre as 5 regras de negócio de uma vez (sentinela -1, faixa
-  -- inválida, preço <= 0, e o outlier estatístico de preço por robust
-  -- z-score), uma métrica agregada de "% de respostas válidas" por run,
-  -- sem precisar de query customizada.
+  -- abaixo). Cobre as regras de negócio estruturais (sentinela -1, faixa
+  -- inválida, preço <= 0), uma métrica agregada de "% de respostas válidas"
+  -- por run, sem precisar de query customizada. O outlier estatístico de
+  -- preço (robust z-score por SKU) não entra aqui — mora em
+  -- execucao_pdv_preco_stats.sql, que expõe flag_outlier com seu próprio
+  -- EXPECT, pra não duplicar o cálculo de mediana/MAD em dois lugares.
   CONSTRAINT resposta_valida_esperada EXPECT (resposta_valida)
 )
 COMMENT 'Execução PDV tipada, limpa e deduplicada por (loja, dia).'
@@ -81,46 +85,20 @@ clean AS (
     END AS resposta_percentual
   FROM typed
 ),
--- Mediana e MAD (median absolute deviation) de preço por SKU, só a partir de
--- respostas já estruturalmente válidas (não nulas, não <= 0). Usadas pra
--- flagar outlier estatístico (ex: "dedo gordo", 69 em vez de 6,90) que o
--- filtro de sentinela sozinho não pega. Robust z-score em vez de z-score
--- comum porque mediana/MAD não se deixam puxar pelos próprios outliers que
--- estão sendo caçados (ao contrário de média/desvio-padrão).
-preco_stats AS (
-  SELECT
-    id_produto,
-    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY resposta_preco) AS mediana_preco
-  FROM clean
-  WHERE indicador = 'PRECO' AND resposta_preco IS NOT NULL AND resposta_preco > 0
-  GROUP BY id_produto
-),
-preco_mad AS (
-  SELECT
-    c.id_produto,
-    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY ABS(c.resposta_preco - s.mediana_preco)) AS mad_preco
-  FROM clean c
-  JOIN preco_stats s ON c.id_produto = s.id_produto
-  WHERE c.indicador = 'PRECO' AND c.resposta_preco IS NOT NULL AND c.resposta_preco > 0
-  GROUP BY c.id_produto
-),
 flagged AS (
   SELECT
     c.*,
     CASE
       WHEN c.indicador = 'PONTO_EXTRA' AND (c.resposta_numero IS NULL OR c.resposta_numero = -1) THEN false
       WHEN c.indicador = 'SHARE_GONDOLA' AND (c.resposta_percentual IS NULL OR c.resposta_percentual < 0 OR c.resposta_percentual > 100) THEN false
+      -- validade estrutural só; outlier estatístico (robust z-score por SKU)
+      -- é responsabilidade de execucao_pdv_preco_stats.sql, não daqui.
       WHEN c.indicador = 'PRECO' AND (c.resposta_preco IS NULL OR c.resposta_preco <= 0) THEN false
-      -- robust z-score > 3.5 (regra padrão Iglewicz & Hoaglin) = outlier estatístico pro SKU
-      WHEN c.indicador = 'PRECO' AND pm.mad_preco > 0
-        AND ABS(0.6745 * (c.resposta_preco - ps.mediana_preco) / pm.mad_preco) > 3.5 THEN false
       WHEN c.indicador IN ('PRESENCA', 'RUPTURA', 'MPDV') AND c.resposta_bool IS NULL THEN false
       WHEN c.dt_pesquisa IS NULL THEN false
       ELSE true
     END AS resposta_valida
   FROM clean c
-  LEFT JOIN preco_stats ps ON c.id_produto = ps.id_produto
-  LEFT JOIN preco_mad pm ON c.id_produto = pm.id_produto
 ),
 dedup_sync AS (
   -- ~3% das respostas são sincronizadas em duplicidade pelo app (mesmo
