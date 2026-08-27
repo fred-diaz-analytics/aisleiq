@@ -54,4 +54,7 @@ jobs:
           # estrutura. Não precisa ser um endpoint real, só precisa existir
           # (a variável não tem default de propósito, ver databricks.yml).
           BUNDLE_VAR_s3_endpoint: https://ci-placeholder.storage.supabase.co/storage/v1/s3
+          # Idem: só usada dentro do target prod (run_as), mas o CLI exige
+          # toda variável declarada resolvida mesmo validando -t dev.
+          BUNDLE_VAR_prod_service_principal_id: 00000000-0000-0000-0000-000000000000
         run: databricks bundle validate -t dev
