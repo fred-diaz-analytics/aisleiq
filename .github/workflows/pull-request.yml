@@ -58,3 +58,43 @@ jobs:
           # toda variável declarada resolvida mesmo validando -t dev.
           BUNDLE_VAR_prod_service_principal_id: 00000000-0000-0000-0000-000000000000
         run: databricks bundle validate -t dev
+
+  pipeline-smoke-test:
+    # bundle-validate só confere estrutura (YAML, referências, variáveis) —
+    # nunca executa o SQL do Lakeflow. Esse job roda o pipeline de verdade
+    # contra aisleiq_dev, pra pegar erro de execução (ex: função não
+    # suportada como window function) antes do merge, não depois — foi
+    # assim que achamos o bug do MEDIAN() OVER na camada de score.
+    #
+    # Reaproveita o catálogo aisleiq_dev (mesmo usado pro dev manual) em vez
+    # de um catálogo isolado só pra CI — decisão consciente pra projeto
+    # solo: sem setup extra (catálogo/grants novos), ao custo de um
+    # cenário raro de colisão se um teste manual em dev rodar exatamente
+    # junto com uma execução desta esteira.
+    needs: bundle-validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: databricks/setup-cli@main
+      - name: Configurar host do workspace
+        run: sed -i "s|https://<SEU_WORKSPACE>.cloud.databricks.com|${{ secrets.DATABRICKS_HOST }}|g" databricks.yml
+      - name: databricks bundle deploy -t dev
+        env:
+          DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+          # Placeholder — este job só roda o pipeline silver_gold, nunca a
+          # ingestão bronze (que é quem de fato usa esse endpoint). Bronze já
+          # existe em aisleiq_dev via execuções manuais anteriores.
+          BUNDLE_VAR_s3_endpoint: https://ci-placeholder.storage.supabase.co/storage/v1/s3
+          BUNDLE_VAR_prod_service_principal_id: 00000000-0000-0000-0000-000000000000
+        run: databricks bundle deploy -t dev
+      - name: databricks bundle run silver_gold -t dev
+        # Roda só o pipeline Lakeflow (silver_gold), não o job trade_analytics
+        # inteiro — bronze é ingestão de dado, não muda com PR de código, e
+        # rodar de novo a cada PR seria caro/lento sem testar nada novo.
+        env:
+          DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+          BUNDLE_VAR_s3_endpoint: https://ci-placeholder.storage.supabase.co/storage/v1/s3
+          BUNDLE_VAR_prod_service_principal_id: 00000000-0000-0000-0000-000000000000
+        run: databricks bundle run silver_gold -t dev
