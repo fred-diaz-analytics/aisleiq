@@ -49,3 +49,7 @@ data/atendimento/*.parquet
 # Specs de discussão/design (skill brainstorming/grilling) — registro interno
 # do processo de decisão, não é documentação do projeto em si.
 docs/superpowers/
+
+# Gabarito dos efeitos plantados (data/export_verdade_plantada.py) —
+# chave de resposta da validação do score, reproduzível, não é dado do projeto.
+data/verdade_plantada.csv

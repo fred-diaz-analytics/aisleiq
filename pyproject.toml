@@ -1,6 +1,6 @@
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src/pipelines/trade_analytics/transformations/bronze"]
+pythonpath = ["src/pipelines/trade_analytics/transformations/bronze", "data"]
 
 [tool.ruff]
 line-length = 120
@@ -17,6 +17,8 @@ select = ["E", "F", "I"]
 "src/pipelines/trade_analytics/transformations/bronze/bronze_ingest.py" = ["F821", "E402"]
 "src/pipelines/trade_analytics/transformations/bronze/bronze_ingest_lojas.py" = ["F821", "E402"]
 "src/pipelines/trade_analytics/transformations/bronze/bronze_ingest_produtos.py" = ["F821", "E402"]
+"src/pipelines/trade_analytics/transformations/bronze/bronze_ingest_metas.py" = ["F821", "E402"]
+"src/analysis/*.py" = ["F821", "E402"]
 # Gerador de dados sintéticos: código denso (dict literals, chamadas com
 # muitos argumentos), já validado como determinístico byte a byte. Reformatar
 # só por causa do comprimento da linha arrisca uma regressão sutil sem

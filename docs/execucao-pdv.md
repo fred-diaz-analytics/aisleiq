@@ -52,6 +52,27 @@ mesmo dia, mantém só o "vencedor" (quem tem mais respostas; empate por menor `
 Todas com `CONSTRAINT ... EXPECT` na Lakeflow Declarative Pipeline, sem `ON VIOLATION DROP
 ROW`: uma linha de KPI fora do intervalo esperado é registrada, não escondida.
 
+## Score de Execução (Perfect Store)
+
+Pasta `gold/scores/`. Nota 0-100 por `(id_loja, dt_pesquisa, categoria_produto)`:
+
+| Pilar | Peso | Regra | Meta |
+|---|---|---|---|
+| Disponibilidade efetiva (OSA) | 55% | por SKU: presença × (1 − ruptura); produto ausente = 0; média ponderada pelo valor semanal do SKU | — |
+| Preço | 20% | curva assimétrica em torno do preço sugerido (100 dentro da banda, queda íngreme abaixo, suave acima) | `gold.meta_preco` |
+| Share de gôndola | 15% | `min(100, share / meta)` | `gold.meta_share` |
+| Ponto extra | 5% | linear, 100 a partir de 2 por visita | — |
+| MPDV | 5% | % de material ativado | — |
+
+- **Portão de completude** (`visitas_completas`): produto ausente entra só com
+  a presença (é a pior falha de disponibilidade e tem que pesar); produto
+  presente exige ruptura, preço e share válidos.
+- **Pilar sem dado sai do denominador** (re-ponderação): `cobertura_pilares_pct`
+  mostra quanto do peso foi medido.
+- `osa_must_have`: OSA só dos SKUs must-have, base da flag Perfect Store.
+- `kpi_valor_em_risco`: R$/semana do giro esperado dos SKUs indisponíveis
+  (ausentes ou em ruptura), pra priorizar por valor e não só por nota.
+
 ## Principais Campos
 
 `id_loja`, `id_produto`, `dt_pesquisa`: grão comum às seis tabelas. `produto`/`marca`/

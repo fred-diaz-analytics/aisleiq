@@ -29,7 +29,7 @@ cidade) são exportados em CSVs próprios que alimentam o domínio `lojas`
 | `uf` | texto | UF real (extraída de `cidades_reais.csv`) |
 | `cidade` | texto | Cidade real correspondente à UF (geografia pública, não identifica o cliente) |
 | `categoria_loja` | texto | VAREJO / ATACADO / ATACAREJO — pesos 60/25/15% |
-| `periodicidade_visita` | texto | Cadência de visita: SEMANAL (40%) / QUINZENAL (35%) / MENSAL (25%) |
+| `periodicidade_visita` | texto | Cadência de visita: NUCLEO (5%, todo dia útil) / SEMANAL (25%) / QUINZENAL (20%) / MENSAL (20%) / ESPORADICA (30%, janela única de 1-3 semanas no ano) |
 | `dia_semana_visita` | int | Dia da semana fixo da rota dessa loja (0=segunda ... 4=sexta) |
 | `semana_par_visita` | bool | Só relevante se `periodicidade_visita = QUINZENAL`: visita em semanas ISO pares ou ímpares |
 | `semana_do_mes_visita` | int (1-4) | Só relevante se `periodicidade_visita = MENSAL`: em qual semana do mês a loja é visitada |
@@ -249,3 +249,49 @@ gold.dim_produto (id_produto) ── join 1→N com as 6 gold tables de
 execucao_pdv via id_produto — feito no modelo do Power BI, não em SQL
 (gold.dim_produto não é referenciada por FK em nenhuma outra gold table)
 ```
+
+## 11. Domínio `metas` — metas comerciais (dado mestre)
+
+Fonte: 3 CSVs estáticos gerados direto das constantes do gerador
+(`data/export_metas.py`, determinístico, sem estado de entrada) → 3
+tabelas bronze (mesmo nome) → 3 tabelas silver (mesmo nome, tipadas) → 3
+tabelas gold de regra/meta. Mesmo padrão de `produtos`: full-reload sob
+demanda (`bronze_ingest_metas.py`, job `trade_analytics_metas`, sem
+`schedule`). O gerador usa as mesmas funções pra ancorar o preço observado
+no PDV, então meta e dado não divergem.
+
+| Tabela (bronze/silver) | Colunas | Chave |
+|---|---|---|
+| `preco_sugerido` | `id_produto`, `categoria_loja`, `preco_sugerido` (R$ x,x9), `banda_min_pct` (-3), `banda_max_pct` (+5), `vigencia_inicio` | `id_produto` + `categoria_loja` |
+| `sku_prioridade` | `id_produto`, `categoria_loja`, `giro_semanal_un`, `must_have` | `id_produto` + `categoria_loja` |
+| `meta_share` | `id_marca`, `categoria_loja`, `meta_share_pct` | `id_marca` + `categoria_loja` |
+
+- Preço sugerido = baseline de preço da marca × fator do canal (VAREJO 1,00 / ATACAREJO 0,93 / ATACADO 0,88).
+- Giro semanal = tier da marca na categoria (líder 24 / meio 12 / pequena 5 un.) × tamanho (P 1,2 / M 1,0 / G 0,7) × canal (VAREJO 1,0 / ATACAREJO 2,5 / ATACADO 3,0). `must_have` = todo SKU da marca líder + tamanho M da marca do meio.
+- Meta de share = tier da marca (líder 40% / meio 18% / pequena 6%).
+
+**Gold:** `gold.meta_preco` (espelho da silver), `gold.sku_prioridade`
+(+ `valor_semanal` = giro × preço sugerido, R$/semana — peso do SKU no
+score e base do R$ em risco), `gold.meta_share` (+ nome da `marca`, pra
+join com `dim_produto`). Join com loja é por `categoria_loja` via `dim_loja`.
+
+## 12. Efeitos plantados no gerador (gabarito da validação)
+
+Sem efeito plantado, a única variação do dado é por marca e diferença
+entre lojas é ruído. `efeitos_loja()` em `lib_geracao.py` planta efeitos
+determinísticos, derivados de colunas que `dclientes.csv` já tem (nenhum
+estado novo):
+
+| Efeito | Quem | O que muda |
+|---|---|---|
+| Reposição ruim | redes Super Economia, Rede Popular, Mercadinho Vitória | taxa de ruptura × 1,8 |
+| Guerra de preço | redes Atacadão Sul, Atacado Bom Jesus | preço praticado = 85% do preço sugerido (abaixo da banda) |
+| Excelência | Rede Confiança | ruptura × 0,5, presença +5 p.p. |
+| Loja crítica | 35 lojas sorteadas (seed fixa) | presença-alvo × 0,75, deslistagem × 4, ruptura × 1,5 |
+| Decaimento por cadência | todas | chance de ruptura na visita + 10 p.p. × min(dias desde a última visita, 30) / 30 |
+| Promotor | nenhum | sem efeito, de propósito (controle negativo) |
+
+`data/export_verdade_plantada.py` exporta o gabarito por loja
+(`verdade_plantada.csv`, gitignored, nunca ingerido pela pipeline) com a
+`severidade_esperada` em pontos de score. `src/analysis/validar_verdade_plantada.py`
+cruza o gabarito com a gold e checa se o score reencontra cada efeito.
