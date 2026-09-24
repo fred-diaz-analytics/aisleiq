@@ -82,3 +82,23 @@ resources:
               s3_endpoint: ${var.s3_endpoint}
               prefix: trade_analytics/produtos/
           max_retries: 3
+
+    # Metas comerciais (preço sugerido, prioridade de SKU, meta de share):
+    # dado mestre, mesmo padrão de trade_analytics_produtos — full-reload sob
+    # demanda, sem `schedule`. Rodar manualmente
+    # (`databricks bundle run trade_analytics_metas -t dev`) sempre que as
+    # metas mudarem. Ver
+    # docs/superpowers/specs/2026-09-24-metas-e-efeitos-plantados-design.md.
+    trade_analytics_metas:
+      name: ${var.catalog}_metas
+      tasks:
+        - task_key: bronze_metas
+          notebook_task:
+            notebook_path: ../src/pipelines/trade_analytics/transformations/bronze/bronze_ingest_metas.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${resources.schemas.bronze.name}
+              volume_name: ${resources.volumes.raw_files.name}
+              s3_endpoint: ${var.s3_endpoint}
+              prefix: trade_analytics/metas/
+          max_retries: 3

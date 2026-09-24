@@ -5,6 +5,7 @@ Peça central: a dimensão de lojas (`dim_lojas`) é gerada UMA VEZ e persistida
 (dclientes) — não é recriada a cada dia. O que muda dia a dia é só QUAIS lojas
 são visitadas (via periodicidade) e as respostas caóticas do promotor.
 """
+import math
 import os
 import random
 from datetime import date, datetime, timedelta
@@ -66,7 +67,12 @@ METRICAS_ESTADO = {
     # sigma/minimo/maximo continuam valendo pra evolução dia-a-dia (_passo_ou).
     "prob_mpdv": (0.55, 0.02, 0.0, 0.95),
     "taxa_ruptura": (0.10, 0.02, 0.0, 0.80),
-    "preco_medio": (6.8, 0.20, 2.0, 18.0),          # sigma em R$, não %
+    # sigma em R$, não %. 0.06 (era 0.20): com THETA=0.05 o desvio
+    # estacionário do OU é sigma/sqrt(1-(1-THETA)^2) ~= 3.2x sigma — 0.20
+    # dava ~R$0,64 (~9% do preço), jogando loja "normal" pra fora da banda
+    # de -3%/+5% do preço sugerido o tempo todo; 0.06 dá ~3%, e sobra a
+    # guerra de preço plantada (REDES_GUERRA_PRECO) como sinal de verdade.
+    "preco_medio": (6.8, 0.06, 2.0, 18.0),
     "media_ponto_extra": (1.4, 0.12, 0.0, 6.0),
     "media_share_gondola": (0.34, 0.015, 0.02, 0.65),
 }
@@ -144,12 +150,7 @@ def build_baselines_marca(marcas: list) -> dict:
     """Pré-computa, uma vez, o baseline efetivo de cada métrica pra cada
     marca do catálogo -- presença/ruptura/mpdv/ponto_extra/share vêm do
     ranking líder/meio/pequena da categoria; preço vem de _offset_marca."""
-    ranking = ranking_por_categoria()
-    tier_da_marca = {
-        marca: _tier_da_posicao(ordem.index(marca), len(ordem))
-        for categoria, ordem in ranking.items()
-        for marca in ordem
-    }
+    tier_da_marca = tier_por_marca()
 
     baselines = {}
     for marca in marcas:
@@ -167,6 +168,232 @@ def _prob_relistar(prob_alvo: float, prob_delistar: float = PROB_DELISTAR) -> fl
     """Prob. de GANHAR listagem, calibrada pra que o estado estacionário da
     cadeia de Markov (delistar/relistar) convirja pro prob_alvo desejado."""
     return prob_delistar * prob_alvo / (1 - prob_alvo)
+
+
+def tier_por_marca() -> dict:
+    """marca -> líder/meio/pequena, a partir do ranking da categoria."""
+    return {
+        marca: _tier_da_posicao(ordem.index(marca), len(ordem))
+        for ordem in ranking_por_categoria().values()
+        for marca in ordem
+    }
+
+
+# ---------------------------------------------------------------------------
+# Metas comerciais (domínio `metas`: preço sugerido, prioridade de SKU, meta
+# de share). Mesma fonte de verdade que o gerador usa pra ancorar o preço
+# observado — meta e dado não têm como divergir. Exportadas por
+# export_metas.py, ingeridas como dado mestre (full-reload sob demanda).
+# ---------------------------------------------------------------------------
+CATEGORIAS_LOJA = ["VAREJO", "ATACADO", "ATACAREJO"]
+FATOR_PRECO_CANAL = {"VAREJO": 1.00, "ATACAREJO": 0.93, "ATACADO": 0.88}
+BANDA_PRECO_PCT = (-3.0, 5.0)  # banda de tolerância em torno do preço sugerido
+VIGENCIA_METAS = date(2026, 1, 1)
+GIRO_SEMANAL_TIER = {"lider": 24.0, "meio": 12.0, "pequena": 5.0}  # unidades/semana, varejo, tamanho M
+FATOR_GIRO_TAMANHO = {"P": 1.2, "M": 1.0, "G": 0.7}
+FATOR_GIRO_CANAL = {"VAREJO": 1.0, "ATACAREJO": 2.5, "ATACADO": 3.0}
+# ~ponto médio da faixa de TIERS_METRICA["media_share_gondola"]: marca
+# executando no próprio baseline fica perto de nota 100.
+META_SHARE_TIER_PCT = {"lider": 40.0, "meio": 18.0, "pequena": 6.0}
+
+
+def _preco_de_gondola(valor: float) -> float:
+    """Arredonda pro padrão de etiqueta R$ x,x9 (fica entre -1 e +9 centavos do valor)."""
+    return round(math.floor(valor * 10) / 10 + 0.09, 2)
+
+
+def build_df_preco_sugerido() -> pd.DataFrame:
+    """Preço sugerido (RRP) por SKU x canal: baseline de preço da marca x fator do canal."""
+    df_produtos = build_df_produtos()
+    baselines = build_baselines_marca(df_produtos["marca"].unique().tolist())
+    linhas = []
+    for _, p in df_produtos.iterrows():
+        for canal in CATEGORIAS_LOJA:
+            linhas.append({
+                "id_produto": int(p["id_produto"]),
+                "categoria_loja": canal,
+                "preco_sugerido": _preco_de_gondola(baselines[p["marca"]]["preco_medio"] * FATOR_PRECO_CANAL[canal]),
+                "banda_min_pct": BANDA_PRECO_PCT[0],
+                "banda_max_pct": BANDA_PRECO_PCT[1],
+                "vigencia_inicio": VIGENCIA_METAS.isoformat(),
+            })
+    return pd.DataFrame(linhas)
+
+
+def mapa_preco_sugerido() -> dict:
+    """(id_produto, categoria_loja) -> preco_sugerido."""
+    df = build_df_preco_sugerido()
+    return {(int(r.id_produto), r.categoria_loja): float(r.preco_sugerido) for r in df.itertuples()}
+
+
+def build_df_sku_prioridade() -> pd.DataFrame:
+    """Giro semanal esperado e flag must-have por SKU x canal. must_have =
+    todo SKU da marca líder + tamanho M da marca do meio."""
+    df_produtos = build_df_produtos()
+    tiers = tier_por_marca()
+    linhas = []
+    for _, p in df_produtos.iterrows():
+        tier = tiers[p["marca"]]
+        must_have = tier == "lider" or (tier == "meio" and p["tamanho"] == "M")
+        for canal in CATEGORIAS_LOJA:
+            giro = GIRO_SEMANAL_TIER[tier] * FATOR_GIRO_TAMANHO[p["tamanho"]] * FATOR_GIRO_CANAL[canal]
+            linhas.append({
+                "id_produto": int(p["id_produto"]),
+                "categoria_loja": canal,
+                "giro_semanal_un": round(giro, 1),
+                "must_have": must_have,
+            })
+    return pd.DataFrame(linhas)
+
+
+def build_df_meta_share() -> pd.DataFrame:
+    """Meta de share de gôndola por marca x canal, pelo tier da marca na categoria."""
+    df_produtos = build_df_produtos()
+    tiers = tier_por_marca()
+    marcas = df_produtos[["id_marca", "marca"]].drop_duplicates().sort_values("id_marca")
+    linhas = [
+        {"id_marca": int(m.id_marca), "categoria_loja": canal, "meta_share_pct": META_SHARE_TIER_PCT[tiers[m.marca]]}
+        for m in marcas.itertuples()
+        for canal in CATEGORIAS_LOJA
+    ]
+    return pd.DataFrame(linhas)
+
+
+# ---------------------------------------------------------------------------
+# Efeitos plantados — a "verdade" que o framework analítico tem que
+# reencontrar. Sem isso a única variação do dado é por marca (TIERS_METRICA)
+# e diferença entre lojas é ruído puro. Tudo determinístico e derivado de
+# colunas que dclientes.csv já tem (id_loja, rede), então job_diario.py
+# continua funcionando sem estado novo. Promotor fica SEM efeito de
+# propósito (controle negativo: o framework não deve achar diferença).
+# ---------------------------------------------------------------------------
+REDES_RUPTURA = ["Super Economia", "Rede Popular", "Mercadinho Vitória"]  # reposição ruim
+REDES_GUERRA_PRECO = ["Atacadão Sul", "Atacado Bom Jesus"]  # preço abaixo da banda
+REDE_EXCELENCIA = "Rede Confiança"
+FATOR_RUPTURA_REDE_RUIM = 1.8
+FATOR_PRECO_GUERRA = 0.85
+FATOR_RUPTURA_EXCELENCIA = 0.5
+DELTA_PRESENCA_EXCELENCIA = 0.05
+N_LOJAS_CRITICAS = 35
+FATOR_PRESENCA_CRITICA = 0.75
+FATOR_DELISTAR_CRITICA = 4.0  # sem isso o estado estacionário de _prob_relistar não cai
+FATOR_RUPTURA_CRITICA = 1.5
+# Decaimento por cadência: quanto mais tempo desde a última visita, maior a
+# chance de ruptura no dia da visita (promotor é quem repõe/puxa pedido).
+K_DECAY_RUPTURA = 0.10
+DIAS_DECAY_MAX = 30
+DIAS_SEM_HISTORICO = 7
+DIAS_TIPICOS_CADENCIA = {"NUCLEO": 1, "SEMANAL": 7, "QUINZENAL": 14, "MENSAL": 28, "ESPORADICA": 7}
+
+
+def lojas_criticas(ids) -> set:
+    ids = sorted(int(i) for i in ids)
+    return set(random.Random("lojas_criticas").sample(ids, min(N_LOJAS_CRITICAS, len(ids))))
+
+
+def efeitos_loja(dim_lojas: pd.DataFrame) -> dict:
+    """id_loja -> multiplicadores plantados (rede + loja crítica)."""
+    criticas = lojas_criticas(dim_lojas["id_loja"])
+    efeitos = {}
+    for _, loja in dim_lojas.iterrows():
+        id_loja = int(loja["id_loja"])
+        rede = loja["rede"]
+        e = {
+            "critica": id_loja in criticas,
+            "rede_ruptura": rede in REDES_RUPTURA,
+            "rede_guerra_preco": rede in REDES_GUERRA_PRECO,
+            "rede_excelencia": rede == REDE_EXCELENCIA,
+            "fator_ruptura": 1.0,
+            "fator_presenca": 1.0,
+            "delta_presenca": 0.0,
+            "fator_delistar": 1.0,
+            "fator_preco": 1.0,
+        }
+        if e["rede_ruptura"]:
+            e["fator_ruptura"] *= FATOR_RUPTURA_REDE_RUIM
+        if e["rede_excelencia"]:
+            e["fator_ruptura"] *= FATOR_RUPTURA_EXCELENCIA
+            e["delta_presenca"] += DELTA_PRESENCA_EXCELENCIA
+        if e["rede_guerra_preco"]:
+            e["fator_preco"] = FATOR_PRECO_GUERRA
+        if e["critica"]:
+            e["fator_ruptura"] *= FATOR_RUPTURA_CRITICA
+            e["fator_presenca"] = FATOR_PRESENCA_CRITICA
+            e["fator_delistar"] = FATOR_DELISTAR_CRITICA
+        efeitos[id_loja] = e
+    return efeitos
+
+
+def fator_decay_ruptura(dias_desde_ultima_visita: int) -> float:
+    """Acréscimo na prob. de ruptura do dia, linear até DIAS_DECAY_MAX."""
+    dias = min(max(dias_desde_ultima_visita, 0), DIAS_DECAY_MAX)
+    return K_DECAY_RUPTURA * dias / DIAS_DECAY_MAX
+
+
+def _dias_desde(ultima, data_ref: date) -> int:
+    """ultima vem do estado (iso string; vazio/NaN quando a loja nunca foi visitada)."""
+    if isinstance(ultima, str) and ultima:
+        return (data_ref - date.fromisoformat(ultima)).days
+    return DIAS_SEM_HISTORICO
+
+
+def baseline_loja_produto(base_marca: dict, efeito: dict, preco_sugerido: float) -> dict:
+    """Baseline efetivo de um (loja, produto): baseline da marca com os
+    efeitos plantados da loja aplicados; preço ancorado no preço sugerido."""
+    cfg_ruptura = METRICAS_ESTADO["taxa_ruptura"]
+    return {
+        "prob_presenca": float(np.clip(base_marca["prob_presenca"] * efeito["fator_presenca"] + efeito["delta_presenca"], 0.05, 0.99)),
+        "prob_delistar": PROB_DELISTAR * efeito["fator_delistar"],
+        "taxa_ruptura": float(np.clip(base_marca["taxa_ruptura"] * efeito["fator_ruptura"], cfg_ruptura[2], cfg_ruptura[3])),
+        "prob_mpdv": base_marca["prob_mpdv"],
+        "media_ponto_extra": base_marca["media_ponto_extra"],
+        "media_share_gondola": base_marca["media_share_gondola"],
+        "preco_medio": preco_sugerido * efeito["fator_preco"],
+    }
+
+
+def nota_preco(desvio_pct: float, banda_min_pct: float = BANDA_PRECO_PCT[0], banda_max_pct: float = BANDA_PRECO_PCT[1]) -> float:
+    """Espelho em Python da curva de gold/scores/02_kpi_preco.sql (0-100)."""
+    d, bmin, bmax = desvio_pct, banda_min_pct / 100, banda_max_pct / 100
+    if d <= -0.18:
+        nota = 0.01
+    elif d < bmin:
+        nota = 1 - ((abs(d) - abs(bmin)) / (0.18 - abs(bmin))) ** 2
+    elif d <= bmax:
+        nota = 1.0
+    else:
+        nota = 1 - 10 * (d - bmax) ** 2
+    return max(0.01, nota) * 100
+
+
+def build_verdade_plantada(dim_lojas: pd.DataFrame) -> pd.DataFrame:
+    """Gabarito por loja: quais efeitos foram plantados e quantos pontos de
+    score se espera perder por causa deles (severidade_esperada). Nunca vai
+    pro lakehouse — só pra validar se o score reencontra o que foi plantado."""
+    baselines = build_baselines_marca(build_df_produtos()["marca"].unique().tolist())
+    ruptura_media = float(np.mean([b["taxa_ruptura"] for b in baselines.values()]))
+    presenca_media = float(np.mean([b["prob_presenca"] for b in baselines.values()]))
+
+    efeitos = efeitos_loja(dim_lojas)
+    linhas = []
+    for _, loja in dim_lojas.iterrows():
+        e = efeitos[int(loja["id_loja"])]
+        dias = DIAS_TIPICOS_CADENCIA.get(loja["periodicidade_visita"], DIAS_SEM_HISTORICO)
+        ruptura_extra = ruptura_media * (e["fator_ruptura"] - 1) + fator_decay_ruptura(dias)
+        presenca_perdida = presenca_media - float(np.clip(presenca_media * e["fator_presenca"] + e["delta_presenca"], 0.05, 0.99))
+        penalidade_preco = (100 - nota_preco(e["fator_preco"] - 1)) / 100
+        linhas.append({
+            "id_loja": int(loja["id_loja"]),
+            "rede": loja["rede"],
+            "categoria_loja": loja["categoria_loja"],
+            "periodicidade_visita": loja["periodicidade_visita"],
+            "id_usuario": int(loja["id_usuario"]),
+            **{k: e[k] for k in ["critica", "rede_ruptura", "rede_guerra_preco", "rede_excelencia",
+                                 "fator_ruptura", "fator_presenca", "fator_delistar", "fator_preco"]},
+            "dias_tipicos_entre_visitas": dias,
+            "severidade_esperada": round(100 * (0.55 * (ruptura_extra + presenca_perdida) + 0.20 * penalidade_preco), 2),
+        })
+    return pd.DataFrame(linhas)
 
 
 def enviar_supabase(caminho_local: str, caminho_remoto: str) -> None:
@@ -435,11 +662,18 @@ def _formatar_preco_caotico(v: float, rnd: random.Random) -> str:
 
 def build_estado_inicial(dim_lojas: pd.DataFrame, df_produtos: pd.DataFrame, baselines_marca: dict) -> pd.DataFrame:
     """Estado (loja, produto) -> valores 'atuais' de cada métrica. Gerado uma vez;
-    a partir daí só é lido e atualizado incrementalmente pelo job diário."""
+    a partir daí só é lido e atualizado incrementalmente pelo job diário.
+    Já nasce com os efeitos plantados da loja (efeitos_loja) aplicados."""
+    efeitos = efeitos_loja(dim_lojas)
+    precos = mapa_preco_sugerido()
     linhas = []
     for _, loja in dim_lojas.iterrows():
         for _, produto in df_produtos.iterrows():
-            base = baselines_marca[produto["marca"]]
+            base = baseline_loja_produto(
+                baselines_marca[produto["marca"]],
+                efeitos[int(loja["id_loja"])],
+                precos[(int(produto["id_produto"]), loja["categoria_loja"])],
+            )
             linha = {"id_loja": loja["id_loja"], "id_produto": produto["id_produto"], "ruptura_ontem": False, "presenca_atual": True, "data_ultima_atualizacao": ""}
             for metrica in METRICAS_ESTADO:
                 linha[metrica] = base[metrica]
@@ -463,12 +697,15 @@ def gerar_bronze_dia_stateful(dim_lojas: pd.DataFrame, df_produtos: pd.DataFrame
 
     estado_dict = estado.set_index(["id_loja", "id_produto"]).to_dict("index")
     produtos_marca = df_produtos.set_index("id_produto")["marca"].to_dict()
+    efeitos = efeitos_loja(dim_lojas)
+    precos = mapa_preco_sugerido()
 
     lojas_hoje = lojas_do_dia(dim_lojas, data_ref)
     linhas = []
     id_resposta = id_inicial
 
     for _, loja in lojas_hoje.iterrows():
+        efeito = efeitos[int(loja["id_loja"])]
         checkin_valido = rnd.random() < 0.85
         hora_visita = datetime.combine(data_ref, datetime.min.time()) + timedelta(
             hours=int(np_rng.integers(8, 18)), minutes=int(np_rng.integers(0, 60))
@@ -480,12 +717,17 @@ def gerar_bronze_dia_stateful(dim_lojas: pd.DataFrame, df_produtos: pd.DataFrame
 
         for _, produto in produtos_loja.iterrows():
             chave = (loja["id_loja"], produto["id_produto"])
-            base = baselines_marca[produtos_marca[produto["id_produto"]]]
+            base = baseline_loja_produto(
+                baselines_marca[produtos_marca[produto["id_produto"]]],
+                efeito,
+                precos[(int(produto["id_produto"]), loja["categoria_loja"])],
+            )
             e = estado_dict[chave]
+            decay_ruptura = fator_decay_ruptura(_dias_desde(e["data_ultima_atualizacao"], data_ref))
 
             # evolui cada métrica um passo a partir do estado anterior (não sorteia do zero)
             prob_presenca_alvo = base["prob_presenca"]
-            prob_relistar = _prob_relistar(prob_presenca_alvo)
+            prob_relistar = _prob_relistar(prob_presenca_alvo, base["prob_delistar"])
             novo_prob_mpdv = _passo_ou(e["prob_mpdv"], base["prob_mpdv"], *METRICAS_ESTADO["prob_mpdv"][1:], np_rng)
             taxa_ruptura_base = base["taxa_ruptura"]
             bump = BUMP_RUPTURA_PERSISTENTE if e["ruptura_ontem"] else 0.0
@@ -509,7 +751,7 @@ def gerar_bronze_dia_stateful(dim_lojas: pd.DataFrame, df_produtos: pd.DataFrame
                     # transição rara de estado (delistar/relistar), não sorteio do zero —
                     # presença é estrutural, não deveria mudar toda visita
                     if presenca_hoje:
-                        if rnd.random() < PROB_DELISTAR:
+                        if rnd.random() < base["prob_delistar"]:
                             presenca_hoje = False
                     else:
                         if rnd.random() < prob_relistar:
@@ -523,7 +765,9 @@ def gerar_bronze_dia_stateful(dim_lojas: pd.DataFrame, df_produtos: pd.DataFrame
                     # algo que a loja não vende (ou que não sabemos se vende).
                     continue
                 elif grupo == "RUPTURA":
-                    ruptura_hoje = rnd.random() < novo_taxa_ruptura
+                    # decay entra só na chance do dia, não no estado: é o
+                    # efeito do intervalo desde a última visita, não da loja
+                    ruptura_hoje = rnd.random() < min(1.0, novo_taxa_ruptura + decay_ruptura)
                     resposta = "SIM" if ruptura_hoje else "NÃO"
                 elif grupo == "PRECO":
                     valor = novo_preco * (1 + np_rng.normal(0, 0.01))  # ruído fino de captura

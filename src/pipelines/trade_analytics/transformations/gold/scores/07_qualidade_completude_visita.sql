@@ -6,6 +6,9 @@
 -- sistematicamente" é um problema diferente de "está faltando share").
 -- As 4 colunas faltou_* não são mutuamente exclusivas (uma visita pode
 -- faltar mais de um indicador) — não somam para visitas_incompletas.
+-- Produto ausente (presença = NÃO) é visita completa por definição (ver
+-- 00_visitas_completas) — não conta como faltou_ruptura/preço/share;
+-- aparece à parte em skus_ausentes.
 CREATE OR REFRESH MATERIALIZED VIEW ${medallion_catalog}.${gold_schema}.qualidade_completude_visita (
   CONSTRAINT pct_incompletas_no_intervalo EXPECT (pct_incompletas BETWEEN 0 AND 100)
 )
@@ -24,6 +27,7 @@ flag AS (
     r.id_loja IS NOT NULL AS tem_ruptura,
     pc.id_loja IS NOT NULL AS tem_preco,
     s.id_loja IS NOT NULL AS tem_share,
+    COALESCE(NOT vc.presente, false) AS ausente,
     vc.id_loja IS NOT NULL AS completa
   FROM universo u
   LEFT JOIN ${medallion_catalog}.${gold_schema}.execucao_pdv_presenca p USING (id_loja, id_produto, dt_pesquisa)
@@ -40,5 +44,6 @@ SELECT
   COUNT(*) FILTER (WHERE NOT completa AND NOT tem_presenca) AS faltou_presenca,
   COUNT(*) FILTER (WHERE NOT completa AND NOT tem_ruptura) AS faltou_ruptura,
   COUNT(*) FILTER (WHERE NOT completa AND NOT tem_preco) AS faltou_preco,
-  COUNT(*) FILTER (WHERE NOT completa AND NOT tem_share) AS faltou_share
+  COUNT(*) FILTER (WHERE NOT completa AND NOT tem_share) AS faltou_share,
+  COUNT(*) FILTER (WHERE ausente) AS skus_ausentes
 FROM flag
